@@ -6,29 +6,33 @@ from pisense import SenseHAT
 from ephem import readtle, degrees
 from threading import Timer, Thread
 from queue import Queue
+from collections import OrderedDict
 import logzero
 import os
 import time
 import locale
 import math
+import sys
+import signal
 
 import picamera
 import picamera.array
 import numpy as np
 
-sense_hat=SenseHAT()
+sense_hat = SenseHAT()
 cpu = CPUTemperature()
 camera = picamera.PiCamera()
 
 ENABLE_DEBUG = True
 MIN_LOG_PERIOD_IN_SECS = 2
 MIN_IMG_PERIOD_IN_SECS = 5
-SHUTDOWN_TIMEOUT_IN_SECS = 5  
+SHUTDOWN_TIMEOUT_IN_SECS = 3 * 60
 DEFAULT_DURATION_IN_SECS = 3 * 60 * 60 - SHUTDOWN_TIMEOUT_IN_SECS
 DEFAULT_SIZE_PER_LOGFILE_IN_BYTES = 30*1024
 DEFAULT_LOG_PERIOD_IN_SECS = 5
 DEFAULT_IMG_PERIOD_IN_SECS = 10
 DEFAULT_LOGFILE_PREFIX = "sense_hat_logger"
+PICAMERA_SENSOR_MODE_2_RESOLUTION = ( 2592, 1944 )
 
 NO_READING=-1
 LOG_FORMAT='%(asctime)-15s.%(msecs)03d,%(message)s'
@@ -45,13 +49,20 @@ def get_timestamp():
 
 class AsPi:
     _ended = False
+    shutdowntimer = None
 
-    def endnow():
-        sys.exit(0)
+    def isShuttingDown():
+        return not AsPi.shutdowntimer is None
+
+    def terminate():
+        os.kill(os.getpid(),signal.SIGTERM)
 
     def end():
-        AsPi._ended = True
-        Timer( SHUTDOWN_TIMEOUT_IN_SECS , AsPi.endnow )
+        if not AsPi.hasEnded():
+            AsPi._ended = True
+            print("Forcing termination in " + str(SHUTDOWN_TIMEOUT_IN_SECS) + " secs")
+            AsPi.shutdowntimer = Timer( SHUTDOWN_TIMEOUT_IN_SECS , AsPi.terminate )
+            AsPi.shutdowntimer.start()
 
     def hasEnded():
         return AsPi._ended
@@ -77,6 +88,7 @@ class AsPi:
     SENSOR_ELEVATION = "elevation"
     SENSOR_ECLIPSED = "eclipsed"
     SENSOR_MOTION = "motion"
+    SENSOR_USERDATA = "userdata"
 
     UNITS_DEGREES_CELSIUS = "°C"
     UNITS_RADIANS = "rad"
@@ -89,57 +101,61 @@ class AsPi:
     UNITS_METERS = "m"
     UNITS_BOOL = "bool"
     UNITS_COUNT = "n"
+    UNITS_STR = "str"
 
-    UNITS = {
-        SENSOR_CPU_TEMP    : UNITS_DEGREES_CELSIUS,
-        SENSOR_TEMPERATURE : UNITS_DEGREES_CELSIUS,
-        SENSOR_PRESSURE    : UNITS_MILLIBARS,
-        SENSOR_HUMIDITY    : UNITS_PERC_RELATIVE_HUMIDITY,
-        SENSOR_COMPASS_X   : UNITS_MICRO_TESLAS,
-        SENSOR_COMPASS_Y   : UNITS_MICRO_TESLAS,
-        SENSOR_COMPASS_Z   : UNITS_MICRO_TESLAS,
-        SENSOR_GYRO_X      : UNITS_RADIANS_PER_SEC,
-        SENSOR_GYRO_Y      : UNITS_RADIANS_PER_SEC,
-        SENSOR_GYRO_Z      : UNITS_RADIANS_PER_SEC,
-        SENSOR_ACCEL_X     : UNITS_STANDARD_GRAVITIES,
-        SENSOR_ACCEL_Y     : UNITS_STANDARD_GRAVITIES,
-        SENSOR_ACCEL_Z     : UNITS_STANDARD_GRAVITIES,
-        SENSOR_PITCH       : UNITS_RADIANS,
-        SENSOR_ROLL        : UNITS_RADIANS,
-        SENSOR_YAW         : UNITS_RADIANS,
-        SENSOR_LAT         : UNITS_DEGREES,
-        SENSOR_LON         : UNITS_DEGREES,
-        SENSOR_ELEVATION   : UNITS_METERS,
-        SENSOR_ECLIPSED    : UNITS_BOOL,
-        SENSOR_MOTION      : UNITS_COUNT
-    }
+    UNITS = OrderedDict( [
+        ( SENSOR_CPU_TEMP    , UNITS_DEGREES_CELSIUS        ) ,
+        ( SENSOR_TEMPERATURE , UNITS_DEGREES_CELSIUS        ) ,
+        ( SENSOR_PRESSURE    , UNITS_MILLIBARS              ) ,
+        ( SENSOR_HUMIDITY    , UNITS_PERC_RELATIVE_HUMIDITY ) ,
+        ( SENSOR_COMPASS_X   , UNITS_MICRO_TESLAS           ) ,
+        ( SENSOR_COMPASS_Y   , UNITS_MICRO_TESLAS           ) ,
+        ( SENSOR_COMPASS_Z   , UNITS_MICRO_TESLAS           ) ,
+        ( SENSOR_GYRO_X      , UNITS_RADIANS_PER_SEC        ) ,
+        ( SENSOR_GYRO_Y      , UNITS_RADIANS_PER_SEC        ) ,
+        ( SENSOR_GYRO_Z      , UNITS_RADIANS_PER_SEC        ) ,
+        ( SENSOR_ACCEL_X     , UNITS_STANDARD_GRAVITIES     ) ,
+        ( SENSOR_ACCEL_Y     , UNITS_STANDARD_GRAVITIES     ) ,
+        ( SENSOR_ACCEL_Z     , UNITS_STANDARD_GRAVITIES     ) ,
+        ( SENSOR_PITCH       , UNITS_RADIANS                ) ,
+        ( SENSOR_ROLL        , UNITS_RADIANS                ) ,
+        ( SENSOR_YAW         , UNITS_RADIANS                ) ,
+        ( SENSOR_LAT         , UNITS_DEGREES                ) ,
+        ( SENSOR_LON         , UNITS_DEGREES                ) ,
+        ( SENSOR_ELEVATION   , UNITS_METERS                 ) ,
+        ( SENSOR_ECLIPSED    , UNITS_BOOL                   ) ,
+        ( SENSOR_MOTION      , UNITS_COUNT                  ) , 
+        ( SENSOR_USERDATA    , UNITS_STR                    )
+    ])
 
-    #ALL_SENSORS = UNITS.keys()
-    ALL_SENSORS = [
-        SENSOR_CPU_TEMP,
-        SENSOR_TEMPERATURE,
-        SENSOR_PRESSURE,
-        SENSOR_HUMIDITY,
-        SENSOR_COMPASS_X,
-        SENSOR_COMPASS_Y,
-        SENSOR_COMPASS_Z,
-        SENSOR_GYRO_X,
-        SENSOR_GYRO_Y,
-        SENSOR_GYRO_Z,
-        SENSOR_ACCEL_X,
-        SENSOR_ACCEL_Y,
-        SENSOR_ACCEL_Z,
-        SENSOR_PITCH,
-        SENSOR_ROLL,
-        SENSOR_YAW,
-        SENSOR_LAT,
-        SENSOR_LON,
-        SENSOR_ELEVATION,
-        SENSOR_ECLIPSED,
-        SENSOR_MOTION
-    ]
+    ALL_SENSORS = UNITS.keys()
 
-class Sensors:
+class AsPiResult:
+    def __init__(self):
+        self.result = Queue(maxsize = 1)
+    
+    def put( self, data ):
+        try:
+            self.result.get_nowait()
+        except:
+            pass
+        finally:
+           self.result.put( data )
+
+    def get( self , timeout=1):
+        data = None
+        try:
+            data = self.result.get( timeout )
+        except:
+            pass
+        finally:
+            if AsPi.hasEnded():
+                return None
+            return data
+
+class AsPiSensors:
+    userData = AsPiResult()
+    lastAsPiSensorsReading = AsPiResult()
     cpu = CPUTemperature()
     iss = readtle(
             'ISS (ZARYA)' ,
@@ -152,21 +168,21 @@ class Sensors:
         self.selected_sensors = selected_sensors        
         
     def _get_latlon():
-        Sensors.iss.compute()
-        lat = Sensors.iss.sublat * DEGREES_PER_RADIAN
-        lon = Sensors.iss.sublong * DEGREES_PER_RADIAN
-        alt = Sensors.iss.elevation
-        ecl = Sensors.iss.eclipsed
+        AsPiSensors.iss.compute()
+        lat = AsPiSensors.iss.sublat * DEGREES_PER_RADIAN
+        lon = AsPiSensors.iss.sublong * DEGREES_PER_RADIAN
+        alt = AsPiSensors.iss.elevation
+        ecl = AsPiSensors.iss.eclipsed
         return lat,lon, alt, ecl
 
     def read(self):
         
         envreading = self.hat.environ.read()
         imureading = self.hat.imu.read()
-        latitude, longitude, elevation, eclipsed = Sensors._get_latlon()
+        latitude, longitude, elevation, eclipsed = AsPiSensors._get_latlon()
 
         self.readings = { 
-            AsPi.SENSOR_CPU_TEMP : Sensors.cpu.temperature,
+            AsPi.SENSOR_CPU_TEMP : AsPiSensors.cpu.temperature,
             AsPi.SENSOR_TEMPERATURE : envreading.temperature, 
             AsPi.SENSOR_PRESSURE : envreading.pressure,
             AsPi.SENSOR_HUMIDITY : envreading.humidity,
@@ -186,11 +202,15 @@ class Sensors:
             AsPi.SENSOR_LON : longitude,
             AsPi.SENSOR_ELEVATION : elevation,
             AsPi.SENSOR_ECLIPSED : eclipsed,
-            AsPi.SENSOR_MOTION : MotionAnalyser.occurrences            
+            AsPi.SENSOR_MOTION : MotionAnalyser.occurrences, 
+            AsPi.SENSOR_USERDATA :  AsPiSensors.userData.get( timeout=0)
+      
         }
 
         # Reset motion detection occurences count
         MotionAnalyser.occurrences = 0
+
+        AsPiSensors.lastAsPiSensorsReading.put( self.readings )
 
         # Return readings from selected sensors only
         return self.__selected_sensors_only( self.readings )
@@ -218,6 +238,7 @@ class AsPiTimer:
     def cancel(self):
         self.aspitimer.cancel()
 
+
 class MotionAnalyser( picamera.array.PiMotionAnalysis ):
     occurrences=0
 
@@ -231,6 +252,7 @@ class MotionAnalyser( picamera.array.PiMotionAnalysis ):
         if (a > 60).sum() > 10:
             MotionAnalyser.occurrences += 1
 
+
 class AsPiMemImage:
     def __init__(self):
         self.bytes = bytearray()
@@ -240,15 +262,43 @@ class AsPiMemImage:
         return bytes(self.bytes)
 
 
-class AsPiCamera( Thread ):
-    lastPictureTaken = Queue(maxsize = 1)
+class AsPiMotionDetector( Thread ):
+    def __init__(self):
+        Thread.__init__(self)
 
+    def run(self):
+        AsPiMotionDetector.start_motion_detection()
+        while True:
+            if AsPi.hasEnded():
+                self.stop()
+                return
+            time.sleep(1)
+
+    def stop(self):
+        AsPiMotionDetector.stop_motion_detection()
+
+    def start_motion_detection():
+        camera.resolution = (640, 480)
+        camera.framerate = 30
+        camera.start_recording(
+            '/dev/null', format='h264',
+            motion_output = MotionAnalyser( camera )
+            )
+
+    def stop_motion_detection():
+        if camera.recording:
+            camera.stop_recording()
+
+
+class AsPiCamera( Thread ):
+    lastPictureTaken = AsPiResult()
+    isCameraEnabled = False
+    
     def __init__(self, imgPeriodInSecs ):
         Thread.__init__(self)
         self.imgtimer = AsPiTimer( periodInSecs=imgPeriodInSecs, func=self.__take_picture )
 
     def run(self):
-        self.__start_motion_detection()
         self.imgtimer.start()
         while True:
             if AsPi.hasEnded():
@@ -257,63 +307,27 @@ class AsPiCamera( Thread ):
             time.sleep(1)
 
     def stop(self):
-        self.__stop_motion_detection()
         self.imgtimer.cancel()
 
-
-
     def __take_picture(self):
-        self.__stop_motion_detection()
+        AsPiMotionDetector.stop_motion_detection()
         self.__capture_image()
-        self.__start_motion_detection()
-                
-    def __start_motion_detection(self):
-        camera.resolution = (640, 480)
-        camera.framerate = 30
-        camera.start_recording(
-            '/dev/null', format='h264',
-            motion_output = MotionAnalyser( camera )
-            )
-
-    def __stop_motion_detection(self):
-        if camera.recording:
-            camera.stop_recording()
-
-    def getLastPictureTaken():
-        img = None
-        while True:
-            try:
-                img = AsPiCamera.lastPictureTaken.get( timeout = 1 )
-                return img
-            except:
-                pass
-            finally:
-                if AsPi.hasEnded():
-                    return None
-
-    def __replace_lastPictureTaken(pic):
-        try:
-            AsPiCamera.lastPictureTaken.get_nowait()
-        except:
-            pass
-        finally:
-            AsPiCamera.lastPictureTaken.put( pic )
+        AsPiMotionDetector.start_motion_detection()
 
     def __save_image( img, imgfilename ):
         imgfile = open(imgfilename, 'wb')
         imgfile.write( img.get_bytes() )
         imgfile.close()
 
-
     def __capture_image(self):
         imgfileprefix = AsPiLogFile.generate_fileprefix() 
-        camera.resolution = ( 2592, 1944 )
+        camera.resolution = PICAMERA_SENSOR_MODE_2_RESOLUTION
         camera.exif_tags['Artist'] = imgfileprefix
         lat,lon = self.__set_latlon_in_exif()
         imgfilename = imgfileprefix + "_" + lat + "_" + lon + ".jpg"
         img = AsPiMemImage()
         camera.capture( img , "jpeg")
-        AsPiCamera.__replace_lastPictureTaken( img )
+        AsPiCamera.lastPictureTaken.put( ( imgfilename, img ) )
         AsPiCamera.__save_image( img, imgfilename )
 
         if AsPi.hasEnded():
@@ -321,20 +335,19 @@ class AsPiCamera( Thread ):
         else:
             self.imgtimer.reset()
 
-
     def __set_latlon_in_exif(self):
         """
         A function to write lat/long to EXIF data for photographs
         """
-        Sensors.iss.compute() # Get the lat/long values from ephem
-        long_value = [float(i) for i in str(Sensors.iss.sublong).split(":")]
+        AsPiSensors.iss.compute() # Get the lat/long values from ephem
+        long_value = [float(i) for i in str(AsPiSensors.iss.sublong).split(":")]
         if long_value[0] < 0:
             long_value[0] = abs(long_value[0])
             longitude_ref = "W"
         else:
             longitude_ref = "E"
         longitude = '%d/1,%d/1,%d/10' % (long_value[0], long_value[1], long_value[2]*10)
-        lat_value = [float(i) for i in str( Sensors.iss.sublat).split(":")]
+        lat_value = [float(i) for i in str( AsPiSensors.iss.sublat).split(":")]
         if lat_value[0] < 0:
             lat_value[0] = abs(lat_value[0])
             latitude_ref = "S"
@@ -347,45 +360,51 @@ class AsPiCamera( Thread ):
         camera.exif_tags['GPS.GPSLongitudeRef'] = longitude_ref
         camera.exif_tags['GPS.GPSLatitudeRef'] = latitude_ref
         camera.exif_tags['GPS.GPSAltitudeRef'] = "0" 
-        camera.exif_tags['GPS.GPSAltitude'] = str( Sensors.iss.elevation)
+        camera.exif_tags['GPS.GPSAltitude'] = str( AsPiSensors.iss.elevation)
 
-        latitude_str ='%s%dd%dm%d' % (latitude_ref, lat_value[0], lat_value[1], lat_value[2]*10)
-        longitude_str='%s%dd%dm%d' % (longitude_ref, long_value[0], long_value[1], long_value[2]*10)
+        latitude_str ='%s%03dd%02dm%02d' % (latitude_ref, lat_value[0], lat_value[1], lat_value[2])
+        longitude_str='%s%03dd%02dm%02d' % (longitude_ref, long_value[0], long_value[1], long_value[2])
 
         return latitude_str ,longitude_str 
 
-
-class AsPiUserLoop(Thread):
-    def __init__(self, callback ):
+class AsPiUserLoop( Thread):
+    def __init__(self, callback , getdata, returndata):
         Thread.__init__(self)
         self.callback = callback
+        self.getdata = getdata
+        self.returndata = returndata
 
     def run(self):
+        if self.callback is None:
+            return
         while True:
-            last_picture = AsPiCamera.getLastPictureTaken()
-            if last_picture is None:
+            data = self.getdata()
+            if data is None:           
                 return
-            self.callback( last_picture )
-            time.sleep(1)
-
+            response = self.callback( data )
+            self.returndata( response )
+            time.sleep(0.5)
 
 class AsPiLogFile:
     filePrefix = DEFAULT_LOGFILE_PREFIX
+
     def __init__(self
             , filePrefix = DEFAULT_LOGFILE_PREFIX
             , logfileMaxBytes = DEFAULT_SIZE_PER_LOGFILE_IN_BYTES
             , sensorList = AsPi.ALL_SENSORS
-            , debug = False ):
+            , logToStdErr = False ):
         AsPiLogFile.filePrefix = filePrefix 
-        self.debugEnabled = debug
+        self.logToStdErr = logToStdErr
         self.sensorList = sensorList
-        self.__prepare_logfile()
-        self.__write_header()
-
-    def __prepare_logfile(self):
-        logzero.logfile( filename=AsPiLogFile.generate_fileprefix() + '.' + LOGFILE_EXT , disableStderrLogger=not self.debugEnabled)
+        self.logfileMaxBytes = logfileMaxBytes
+        self.__create_datalogfile()
+        
+    def __create_datalogfile(self):
+        self.currentDatalogFile = AsPiLogFile.generate_fileprefix() + '.' + LOGFILE_EXT
+        logzero.logfile( filename=self.currentDatalogFile , disableStderrLogger=not self.logToStdErr)
         self.formatter = Formatter(fmt=LOG_FORMAT, datefmt=DATE_FORMAT)
         logzero.formatter( self.formatter )
+        self.__write_header()
 
     def __write_header(self):
         logzero.formatter( NO_TIMESTAMP_FORMATTER )
@@ -398,15 +417,15 @@ class AsPiLogFile:
     
     def log(self, data_array):
         logger.info(",".join( map(str, data_array ) ) )
-        # check data log file size and create another if very big 
+        if os.path.getsize( self.currentDatalogFile )  > self.logfileMaxBytes:
+            self.__create_datalogfile()
 
     def generate_fileprefix():
         return '{dir}/{prefix}-{timestamp}'.format( dir=CURRENT_DIR , prefix=AsPiLogFile.filePrefix , timestamp=get_timestamp() )    
 
-
-    
 class AsPiLogger:
     def __init__(self
+            , cameraEnabled = False
             , logPeriodInSecs = DEFAULT_LOG_PERIOD_IN_SECS
             , imgPeriodInSecs = DEFAULT_IMG_PERIOD_IN_SECS
             , filePrefix = DEFAULT_LOGFILE_PREFIX
@@ -414,18 +433,34 @@ class AsPiLogger:
             , sensorList = AsPi.ALL_SENSORS
             , durationInSecs = DEFAULT_DURATION_IN_SECS
             , updateCallback = None 
-            , debug = False ):
+            , logToStdErr = False ):
 
-        self.logfile = AsPiLogFile( filePrefix = filePrefix, logfileMaxBytes = logfileMaxBytes, sensorList = sensorList, debug = debug )
-        self.sensors = Sensors(sense_hat, sensorList)
+        AsPiCamera.isCameraEnabled = cameraEnabled
+        self.logfile = AsPiLogFile( filePrefix = filePrefix, logfileMaxBytes = logfileMaxBytes, sensorList = sensorList, logToStdErr = logToStdErr )
+        self.sensors = AsPiSensors(sense_hat, sensorList)
         self.logPeriodInSecs = logPeriodInSecs if logPeriodInSecs > MIN_LOG_PERIOD_IN_SECS else MIN_LOG_PERIOD_IN_SECS
         self.imgPeriodInSecs = imgPeriodInSecs if imgPeriodInSecs > MIN_IMG_PERIOD_IN_SECS else MIN_IMG_PERIOD_IN_SECS
 
         self.logtimer = AsPiTimer( self.logPeriodInSecs, self.__log_sensors_reading )
         self.endtimer = AsPiTimer( durationInSecs, AsPi.end )
-        self.camera = AsPiCamera( imgPeriodInSecs )
-        if not updateCallback is None:
-            AsPiUserLoop( updateCallback ).start()
+        self.motiondetector = AsPiMotionDetector()
+        if AsPiCamera.isCameraEnabled: 
+            self.camera = AsPiCamera( imgPeriodInSecs )
+        self.userLoop = AsPiUserLoop( updateCallback , AsPiLogger.getdata , AsPiLogger.setdata )
+
+    def setdata( datareturned ):
+        AsPiSensors.userData.put( datareturned )
+
+    def getdata():
+        while True:
+            lastPictureTaken = AsPiCamera.lastPictureTaken.get() if AsPiCamera.isCameraEnabled else None
+            lastAsPiSensorsReading = AsPiSensors.lastAsPiSensorsReading.get()
+            if lastPictureTaken is None and lastAsPiSensorsReading is None:
+                time.sleep(0.5)
+                if AsPi.hasEnded():
+                    return None
+            else:
+                return lastPictureTaken, lastAsPiSensorsReading
 
     def __log_sensors_reading(self):
         self.logfile.log( self.sensors.read() )
@@ -437,20 +472,29 @@ class AsPiLogger:
             if AsPi.hasEnded():
                 return
 
-    def start(self):
-        self.camera.start() 
+    def start(self):        
+        self.userLoop.start()
+        self.motiondetector.start()
         self.logtimer.start()
         self.endtimer.start()
+        if AsPiCamera.isCameraEnabled:
+            self.camera.start()
         try:
             self.__run()
         except KeyboardInterrupt:
-            self.camera.stop()
+            if AsPiCamera.isCameraEnabled: 
+                self.camera.stop()
             print("CTRL-C! Exiting…")
         finally:
             # clean up
             AsPi.end()
             self.logtimer.cancel()
             self.endtimer.cancel()
+            if AsPiCamera.isCameraEnabled:
+                self.camera.join()
+            print("Waiting for user callback to finish...")
+            self.userLoop.join()
+            AsPi.shutdowntimer.cancel()
             print("Program finished.")
 
 
