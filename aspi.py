@@ -1,3 +1,80 @@
+
+####################################################################################
+#
+# Released under MIT License
+#
+# Copyright (c) 2019 CoderDojo Futurix <coderdojo@futurix.pt>
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy of 
+# this software and associated documentation files (the "Software"), to deal in 
+# the Software without restriction, including without limitation the rights to use,
+# copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the 
+# Software, and to permit persons to whom the Software is furnished to do so, 
+# subject to the following conditions:
+# 
+# The above copyright notice and this permission notice shall be included in all 
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+#  INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A 
+# PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT 
+# HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION 
+# OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE 
+# SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+#
+
+
+'''
+################################################################################
+
+AsPi 
+
+################################################################################
+
+(fork me at: https://github.com/coderdojo-futurix/aspi)
+
+AsPi is a small library that aims to provide the simplest possible data collection
+interface to the sensors available in the AstroPi computer, taking into account 
+the most strict requirements of AstroPi based experiments running in the ISS.
+Allowing the scientists to concentrate on the science experiment aspects and in
+the respective data analysis
+
+The main objective is to allow scientists of all ages with little or no coding 
+background to harness all the data the AstroPi can provide in a very simple 
+and through a "just works" approach. 
+
+It works by periodically taking measurements from all the AstroPi sensors and 
+storing the values in a CSV file. It can also, optionally, take photographs
+using the AstroPi camera and storing them in files (functionality DISABLED
+by default).
+
+The following data is collected from AstroPi sensors:
+
+    * Temperature
+    * Humidity
+    * Pressure
+    * Orientation
+    * Gyroscope
+    * Accelerometer
+    * Compass
+    * ISS Position (calculated via pyephem)
+    * Motion Sensor (using the AstroPi camera)
+
+The AsPi library is designed to allow the program using it, to run completely 
+automatically and unnattended for a specified amount of time, requiring 
+absolutely no interaction from the operator other that to start the program.
+ 
+The AsPi library provides a flat and uniform view across all the multiple
+sensors and devices available in the AstroPi.  
+
+Usage:
+
+    datalogger = AsPiLogger()
+    datalogger.start()
+
+'''
+
+
 from gpiozero import CPUTemperature
 from datetime import datetime 
 from logging import Formatter
@@ -14,26 +91,27 @@ import locale
 import math
 import sys
 import signal
-
 import picamera
 import picamera.array
 import numpy as np
 
+# Global AstroPi device objects
 sense_hat = SenseHAT()
 cpu = CPUTemperature()
 camera = picamera.PiCamera()
 
-ENABLE_DEBUG = True
+# Default values
 MIN_LOG_PERIOD_IN_SECS = 2
 MIN_IMG_PERIOD_IN_SECS = 5
 SHUTDOWN_TIMEOUT_IN_SECS = 3 * 60
 DEFAULT_DURATION_IN_SECS = 3 * 60 * 60 - SHUTDOWN_TIMEOUT_IN_SECS
-DEFAULT_SIZE_PER_LOGFILE_IN_BYTES = 30*1024
+DEFAULT_SIZE_PER_LOGFILE_IN_BYTES = 30*1024*1024
 DEFAULT_LOG_PERIOD_IN_SECS = 5
 DEFAULT_IMG_PERIOD_IN_SECS = 10
 DEFAULT_LOGFILE_PREFIX = "sense_hat_logger"
 PICAMERA_SENSOR_MODE_2_RESOLUTION = ( 2592, 1944 )
-
+ASTROPI_ORIENTATION = 270
+ENABLE_DEBUG = False
 NO_READING=-1
 LOG_FORMAT='%(asctime)-15s.%(msecs)03d,%(message)s'
 DATE_FORMAT='%Y-%m-%d %H:%M:%S'        
@@ -44,20 +122,43 @@ CURRENT_DIR = os.path.dirname(os.path.realpath(__file__))
 LOGFILE_EXT = 'csv'
 NO_TIMESTAMP_FORMATTER = Formatter()
 
+
 def get_timestamp():
+    '''
+    Simple method to return a formatted timestamp of the current time
+    '''
     return TIMESTAMP_FORMAT.format(datetime.now())
 
 class AsPi:
+    '''
+    Utility class that holds constants for the sensors names and respective values units
+    and manages the end of the program 
+    '''
+    # Flag to indicate the program has ended
     _ended = False
+
+    # Holds the termination timer after the end is called
     shutdowntimer = None
 
+
     def isShuttingDown():
+        '''
+        Indicates if the program has ended and the termination timer is active
+        '''
         return not AsPi.shutdowntimer is None
 
     def terminate():
+        '''
+        Self terminates by issuing a SIGTERM to itself
+        '''
         os.kill(os.getpid(),signal.SIGTERM)
 
     def end():
+        '''
+        Call to gracefully end of the program. A termination timer is also started. 
+        If the program cleanup actions are not done in SHUTDOWN_TIMEOUT_IN_SECS seconds, 
+        self termination is issued.
+        '''
         if not AsPi.hasEnded():
             AsPi._ended = True
             print("Forcing termination in " + str(SHUTDOWN_TIMEOUT_IN_SECS) + " secs")
@@ -65,8 +166,12 @@ class AsPi:
             AsPi.shutdowntimer.start()
 
     def hasEnded():
+        '''
+        Indicates if the program ended
+        '''
         return AsPi._ended
 
+    # Sensor names constants
     SENSOR_CPU_TEMP = "cpu_temp"
     SENSOR_TEMPERATURE = "temperature"
     SENSOR_PRESSURE = "pressure"
@@ -90,6 +195,7 @@ class AsPi:
     SENSOR_MOTION = "motion"
     SENSOR_USERDATA = "userdata"
 
+    # Units constants
     UNITS_DEGREES_CELSIUS = "°C"
     UNITS_RADIANS = "rad"
     UNITS_RADIANS_PER_SEC = UNITS_RADIANS + "/sec"
@@ -103,6 +209,7 @@ class AsPi:
     UNITS_COUNT = "n"
     UNITS_STR = "str"
 
+    # Units of the values reported by each sensor
     UNITS = OrderedDict( [
         ( SENSOR_CPU_TEMP    , UNITS_DEGREES_CELSIUS        ) ,
         ( SENSOR_TEMPERATURE , UNITS_DEGREES_CELSIUS        ) ,
@@ -128,9 +235,14 @@ class AsPi:
         ( SENSOR_USERDATA    , UNITS_STR                    )
     ])
 
+    # list with all sensor names
     ALL_SENSORS = UNITS.keys()
 
+
 class AsPiResult:
+    '''
+    Class that stores one and only one value to safely exchanve values between threads
+    '''
     def __init__(self):
         self.result = Queue(maxsize = 1)
     
@@ -154,6 +266,9 @@ class AsPiResult:
             return data
 
 class AsPiSensors:
+    '''
+    Class that makes takes measurements from all sensors 
+    '''
     userData = AsPiResult()
     lastAsPiSensorsReading = AsPiResult()
     cpu = CPUTemperature()
@@ -220,6 +335,11 @@ class AsPiSensors:
 
 
 class AsPiTimer:
+    '''
+    Recurrent Timer. It's the same as python threading timer class but a recurring one.
+    Everytime it fires, calls the callback and sets another Timer. It keeps doing that until 
+    it's cancelled.   
+    '''
     def __init__( self, periodInSecs=DEFAULT_LOG_PERIOD_IN_SECS, func=None ):
         self.periodInSecs = periodInSecs
         self.func = func
@@ -238,8 +358,27 @@ class AsPiTimer:
     def cancel(self):
         self.aspitimer.cancel()
 
+class AsPiMemImage:
+    '''
+    Class to store an image in memory. 
+    To be compatible with Tensorflow classification functions.
+    '''
+    def __init__(self):
+        self.bytes = bytearray()
+    def write(self, new_bytes):
+        self.bytes.extend(new_bytes)
+    def get_bytes(self):
+        return bytes(self.bytes)
+
 
 class MotionAnalyser( picamera.array.PiMotionAnalysis ):
+    '''
+    Analyses frames from recording video and checks if the
+    frame vectors cross the thresholds indicating that movement
+    was detected or not. If it detects movement the occurrences
+    variable is incremented and it can be queried for movement
+    events
+    '''
     occurrences=0
 
     def analyse(self, a):
@@ -252,17 +391,11 @@ class MotionAnalyser( picamera.array.PiMotionAnalysis ):
         if (a > 60).sum() > 10:
             MotionAnalyser.occurrences += 1
 
-
-class AsPiMemImage:
-    def __init__(self):
-        self.bytes = bytearray()
-    def write(self, new_bytes):
-        self.bytes.extend(new_bytes)
-    def get_bytes(self):
-        return bytes(self.bytes)
-
-
 class AsPiMotionDetector( Thread ):
+    '''
+    Starts and stops camera recording to /dev/null sending
+    the frames to the MotionAnalyser class to detect movement.
+    '''
     def __init__(self):
         Thread.__init__(self)
 
@@ -291,6 +424,11 @@ class AsPiMotionDetector( Thread ):
 
 
 class AsPiCamera( Thread ):
+    '''
+    If enabled (it's disabled by default), it starts a thread, periodically taking pictures 
+    with the AstroPi camera and storing them in files, putting the current ISS position in 
+    the image file EXIF tags. It also stores the image in the lastPictureTaken class variable.
+    '''
     lastPictureTaken = AsPiResult()
     isCameraEnabled = False
     
@@ -338,6 +476,8 @@ class AsPiCamera( Thread ):
     def __set_latlon_in_exif(self):
         """
         A function to write lat/long to EXIF data for photographs
+        (source based in the get_latlon function available in the 2019 AstroPi Mission 
+        SpaceLab Phase 2 guide in the "Recording images using the camera" section)
         """
         AsPiSensors.iss.compute() # Get the lat/long values from ephem
         long_value = [float(i) for i in str(AsPiSensors.iss.sublong).split(":")]
@@ -367,7 +507,12 @@ class AsPiCamera( Thread ):
 
         return latitude_str ,longitude_str 
 
+
 class AsPiUserLoop( Thread):
+    '''
+    Thread that continuously calls the provided callback. Passing as arguments, the results of the 'getdata' function.
+    The result of the provided callback is then passed as argument to a 'returndata' function call.
+    '''
     def __init__(self, callback , getdata, returndata):
         Thread.__init__(self)
         self.callback = callback
@@ -386,6 +531,15 @@ class AsPiUserLoop( Thread):
             time.sleep(0.5)
 
 class AsPiLogFile:
+    '''
+    Class that initializes and manages the data log file. 
+
+    A csv data log file, with the specified naming format, is created at the beginning and everytime
+    the log file gets bigger than 'logfileMaxBytes' bytes. Each file has a header in the first line
+    with the sensors names and the respective units.
+    Each data row is written in the csv file as a line with the field values separated by commas with 
+    the timestamp in the DATE_FORMAT format as the first field.
+    '''
     filePrefix = DEFAULT_LOGFILE_PREFIX
 
     def __init__(self
@@ -424,6 +578,17 @@ class AsPiLogFile:
         return '{dir}/{prefix}-{timestamp}'.format( dir=CURRENT_DIR , prefix=AsPiLogFile.filePrefix , timestamp=get_timestamp() )    
 
 class AsPiLogger:
+    '''
+    MAIN CLASS. User facing class that:
+        * configures all the options with the user specified values or with the predefined defaults.
+        * starts the log timer, to periodically log data from the sensors
+        * starts the end timer, to end the program after the specified duration
+        * starts the motion detector thread to monitor and register movements event count 
+        * if the user callback is specified, it starts the user loop thread to continuously send the collected data 
+        to the user provided callback and receive any result to store in the CSV file as a "pseudo" sensor (SENSOR_USERDATA) value 
+        * if camera is enabled, starts the camera thread to periodically take pictures with the AstroPi camera
+        * Gracefully manages the program finalization phase and abnormal interruption handling (CTRL-C)
+    '''
     def __init__(self
             , cameraEnabled = False
             , logPeriodInSecs = DEFAULT_LOG_PERIOD_IN_SECS
@@ -472,7 +637,7 @@ class AsPiLogger:
             if AsPi.hasEnded():
                 return
 
-    def start(self):        
+    def start(self): 
         self.userLoop.start()
         self.motiondetector.start()
         self.logtimer.start()

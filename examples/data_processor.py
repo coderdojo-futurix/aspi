@@ -12,7 +12,7 @@ SENSORS = [
     AsPi.SENSOR_USERDATA
 ]
 
-class ImageProcessor:
+class DataProcessor:
     def __init__(self):
         self.imgcounter = 0
 
